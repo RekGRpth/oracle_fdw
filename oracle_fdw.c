@@ -2784,6 +2784,9 @@ char
 	StringInfoData query, result;
 	List *columnlist,
 		*conditions = foreignrel->baserestrictinfo;
+#if PG_VERSION_NUM >= 140000
+	const char *errstr = NULL;
+#endif
 
 #if PG_VERSION_NUM < 90600
 	columnlist = foreignrel->reltargetlist;
@@ -2891,11 +2894,19 @@ char
 	 * Calculate MD5 hash of the query string so far.
 	 * This is needed to find the query in Oracle's library cache for EXPLAIN.
 	 */
+#if PG_VERSION_NUM >= 140000
+	if (! pg_md5_hash(query.data, strlen(query.data), md5, &errstr))
+#else
 	if (! pg_md5_hash(query.data, strlen(query.data), md5))
+#endif
 	{
 		ereport(ERROR,
 				(errcode(ERRCODE_OUT_OF_MEMORY),
-				errmsg("out of memory")));
+				errmsg("out of memory")
+#if PG_VERSION_NUM >= 140000
+				, errdetail("%s", errstr)
+#endif
+				));
 	}
 
 	/* add comment with MD5 hash to query */
