@@ -373,10 +373,6 @@ static struct OracleFdwState *deserializePlanData(List *list);
 static char *deserializeString(Const *constant);
 static long deserializeLong(Const *constant);
 static bool optionIsTrue(const char *value);
-#if PG_VERSION_NUM < 130000
-/* this function is not exported before v13 */
-static Expr *find_em_expr_for_rel(EquivalenceClass *ec, RelOptInfo *rel);
-#endif  /* PG_VERSION_NUM */
 static char *deparseDate(Datum datum);
 static char *deparseTimestamp(Datum datum, bool hasTimezone);
 static char *deparseInterval(Datum datum);
@@ -401,6 +397,21 @@ static char *fold_case(char *name, fold_t foldcase, int collation);
 static oraIsoLevel getIsolationLevel(const char *isolation_level);
 static bool pushdownOrderBy(PlannerInfo *root, RelOptInfo *baserel, struct OracleFdwState *fdwState);
 static char *deparseLimit(PlannerInfo *root, struct OracleFdwState *fdwState, RelOptInfo *baserel);
+#if PG_VERSION_NUM < 150000
+/* this is new in PostgreSQL v15 */
+struct pg_itm
+{
+	int         tm_usec;
+	int         tm_sec;
+	int         tm_min;
+	int64       tm_hour;        /* needs to be wide */
+	int         tm_mday;
+	int         tm_mon;
+	int         tm_year;
+};
+
+static void interval2itm(Interval span, struct pg_itm *itm);
+#endif  /* PG_VERSION_NUM */
 
 #define REL_ALIAS_PREFIX    "r"
 /* Handy macro to add relation name qualification */
@@ -5536,39 +5547,6 @@ optionIsTrue(const char *value)
 		return false;
 }
 
-#if PG_VERSION_NUM < 130000
-/*
- * find_em_expr_for_rel
- * 		Find an equivalence class member expression, all of whose Vars come from
- * 		the indicated relation.
- * 		This is copied from the PostgreSQL source, because before v13 it was
- * 		not exported.
- */
-Expr *
-find_em_expr_for_rel(EquivalenceClass *ec, RelOptInfo *rel)
-{
-	ListCell   *lc_em;
-
-	foreach(lc_em, ec->ec_members)
-	{
-		EquivalenceMember *em = lfirst(lc_em);
-
-		if (bms_equal(em->em_relids, rel->relids))
-		{
-			/*
-			 * If there is more than one equivalence member whose Vars are
-			 * taken entirely from this relation, we'll be content to choose
-			 * any one of those.
-			 */
-			return em->em_expr;
-		}
-	}
-
-	/* We didn't find any suitable equivalence class expression */
-	return NULL;
-}
-#endif  /* PG_VERSION_NUM */
-
 /*
  * deparseDate
  * 		Render a PostgreSQL date so that Oracle can parse it.
@@ -5651,38 +5629,41 @@ deparseTimestamp(Datum datum, bool hasTimezone)
 char
 *deparseInterval(Datum datum)
 {
-	struct pg_tm tm;
-	fsec_t fsec;
+	struct pg_itm itm;
 	StringInfoData s;
 	char *sign;
 
-	if (interval2tm(*DatumGetIntervalP(datum), &tm, &fsec) != 0)
-	{
-		elog(ERROR, "could not convert interval to tm");
-	}
+	interval2itm(*DatumGetIntervalP(datum), &itm);
 
 	/* only translate intervals that can be translated to INTERVAL DAY TO SECOND */
-	if (tm.tm_year != 0 || tm.tm_mon != 0)
+	if (itm.tm_year != 0 || itm.tm_mon != 0)
 		return NULL;
 
 	/* Oracle intervals have only one sign */
-	if (tm.tm_mday < 0 || tm.tm_hour < 0 || tm.tm_min < 0 || tm.tm_sec < 0 || fsec < 0)
+	if (itm.tm_mday < 0 || itm.tm_hour < 0 || itm.tm_min < 0 || itm.tm_sec < 0 || itm.tm_usec < 0)
 	{
 		sign = "-";
 		/* all signs must match */
-		if (tm.tm_mday > 0 || tm.tm_hour > 0 || tm.tm_min > 0 || tm.tm_sec > 0 || fsec > 0)
+		if (itm.tm_mday > 0 || itm.tm_hour > 0 || itm.tm_min > 0 || itm.tm_sec > 0 || itm.tm_usec > 0)
 			return NULL;
-		tm.tm_mday = -tm.tm_mday;
-		tm.tm_hour = -tm.tm_hour;
-		tm.tm_min = -tm.tm_min;
-		tm.tm_sec = -tm.tm_sec;
-		fsec = -fsec;
+		itm.tm_mday = -itm.tm_mday;
+		itm.tm_hour = -itm.tm_hour;
+		itm.tm_min = -itm.tm_min;
+		itm.tm_sec = -itm.tm_sec;
+		itm.tm_usec = -itm.tm_usec;
 	}
 	else
 		sign = "";
 
+	if (itm.tm_hour > 23)
+		ereport(ERROR,
+				(errcode(ERRCODE_FDW_INVALID_ATTRIBUTE_VALUE),
+				 errmsg("invalid value for Oracle INTERVAL DAY TO SECOND"),
+				 errdetail("The \"hour\" must be less than 24.")));
+
 	initStringInfo(&s);
-	appendStringInfo(&s, "INTERVAL '%s%d %02d:%02d:%02d.%06d' DAY(9) TO SECOND(6)", sign, tm.tm_mday, tm.tm_hour, tm.tm_min, tm.tm_sec, fsec);
+	appendStringInfo(&s, "INTERVAL '%s%d %02d:%02d:%02d.%06d' DAY(9) TO SECOND(6)",
+					 sign, itm.tm_mday, (int)itm.tm_hour, itm.tm_min, itm.tm_sec, itm.tm_usec);
 
 	return s.data;
 }
@@ -5849,8 +5830,7 @@ setModifyParameters(struct paramDesc *paramList, TupleTableSlot *newslot, TupleT
 	Datum datum;
 	bool isnull;
 	int32 value_len;
-	struct pg_tm datetime_tm;
-	fsec_t datetime_fsec;
+	struct pg_itm datetime_itm;
 	StringInfoData s;
 	Oid pgtype;
 
@@ -5899,60 +5879,66 @@ setModifyParameters(struct paramDesc *paramList, TupleTableSlot *newslot, TupleT
 					char sign = '+';
 
 					/* get the parts */
-					(void)interval2tm(*DatumGetIntervalP(datum), &datetime_tm, &datetime_fsec);
+					interval2itm(*DatumGetIntervalP(datum), &datetime_itm);
 
 					switch (oraTable->cols[param->colnum]->oratype)
 					{
 						case ORA_TYPE_INTERVALY2M:
-							if (datetime_tm.tm_mday != 0 || datetime_tm.tm_hour != 0
-									|| datetime_tm.tm_min != 0 || datetime_tm.tm_sec != 0 || datetime_fsec != 0)
+							if (datetime_itm.tm_mday != 0 || datetime_itm.tm_hour != 0
+									|| datetime_itm.tm_min != 0 || datetime_itm.tm_sec != 0 || datetime_itm.tm_usec != 0)
 								ereport(ERROR,
 										(errcode(ERRCODE_FDW_INVALID_ATTRIBUTE_VALUE),
 										errmsg("invalid value for Oracle INTERVAL YEAR TO MONTH"),
 										errdetail("Only year and month can be non-zero for such an interval.")));
-							if (datetime_tm.tm_year < 0 || datetime_tm.tm_mon < 0)
+							if (datetime_itm.tm_year < 0 || datetime_itm.tm_mon < 0)
 							{
-								if (datetime_tm.tm_year > 0 || datetime_tm.tm_mon > 0)
+								if (datetime_itm.tm_year > 0 || datetime_itm.tm_mon > 0)
 									ereport(ERROR,
 											(errcode(ERRCODE_FDW_INVALID_ATTRIBUTE_VALUE),
 											errmsg("invalid value for Oracle INTERVAL YEAR TO MONTH"),
 											errdetail("Year and month must be either both positive or both negative.")));
 								sign = '-';
-								datetime_tm.tm_year = -datetime_tm.tm_year;
-								datetime_tm.tm_mon = -datetime_tm.tm_mon;
+								datetime_itm.tm_year = -datetime_itm.tm_year;
+								datetime_itm.tm_mon = -datetime_itm.tm_mon;
 							}
 
 							initStringInfo(&s);
-							appendStringInfo(&s, "%c%d-%d", sign, datetime_tm.tm_year, datetime_tm.tm_mon);
+							appendStringInfo(&s, "%c%d-%d", sign, datetime_itm.tm_year, datetime_itm.tm_mon);
 							param->value = s.data;
 							break;
 						case ORA_TYPE_INTERVALD2S:
-							if (datetime_tm.tm_year != 0 || datetime_tm.tm_mon != 0)
+							if (datetime_itm.tm_year != 0 || datetime_itm.tm_mon != 0)
 								ereport(ERROR,
 										(errcode(ERRCODE_FDW_INVALID_ATTRIBUTE_VALUE),
 										errmsg("invalid value for Oracle INTERVAL DAY TO SECOND"),
 										errdetail("Year and month must be zero for such an interval.")));
-							if (datetime_tm.tm_mday < 0 || datetime_tm.tm_hour < 0 || datetime_tm.tm_min < 0
-								|| datetime_tm.tm_sec < 0 || datetime_fsec < 0)
+							if (datetime_itm.tm_mday < 0 || datetime_itm.tm_hour < 0 || datetime_itm.tm_min < 0
+								|| datetime_itm.tm_sec < 0 || datetime_itm.tm_usec < 0)
 							{
-								if (datetime_tm.tm_mday > 0 || datetime_tm.tm_hour > 0 || datetime_tm.tm_min > 0
-									|| datetime_tm.tm_sec > 0 || datetime_fsec > 0)
+								if (datetime_itm.tm_mday > 0 || datetime_itm.tm_hour > 0 || datetime_itm.tm_min > 0
+									|| datetime_itm.tm_sec > 0 || datetime_itm.tm_usec > 0)
 									ereport(ERROR,
 											(errcode(ERRCODE_FDW_INVALID_ATTRIBUTE_VALUE),
 											errmsg("invalid value for Oracle INTERVAL DAY TO SECOND"),
 											errdetail("Interval elements must be either all positive or all negative.")));
 								sign = '-';
-								datetime_tm.tm_mday = -datetime_tm.tm_mday;
-								datetime_tm.tm_hour = -datetime_tm.tm_hour;
-								datetime_tm.tm_min = -datetime_tm.tm_min;
-								datetime_tm.tm_sec = -datetime_tm.tm_sec;
-								datetime_fsec = -datetime_fsec;
+								datetime_itm.tm_mday = -datetime_itm.tm_mday;
+								datetime_itm.tm_hour = -datetime_itm.tm_hour;
+								datetime_itm.tm_min = -datetime_itm.tm_min;
+								datetime_itm.tm_sec = -datetime_itm.tm_sec;
+								datetime_itm.tm_usec = -datetime_itm.tm_usec;
 							}
+
+							if (datetime_itm.tm_hour > 23)
+								ereport(ERROR,
+										(errcode(ERRCODE_FDW_INVALID_ATTRIBUTE_VALUE),
+										 errmsg("invalid value for Oracle INTERVAL DAY TO SECOND"),
+										 errdetail("The \"hour\" must be less than 24.")));
 
 							initStringInfo(&s);
 							appendStringInfo(&s, "%c%d %02d:%02d:%02d.%06d",
-									sign, datetime_tm.tm_mday, datetime_tm.tm_hour, datetime_tm.tm_min,
-									datetime_tm.tm_sec, (int32)datetime_fsec);
+									sign, datetime_itm.tm_mday, (int)datetime_itm.tm_hour, datetime_itm.tm_min,
+									datetime_itm.tm_sec, (int32)datetime_itm.tm_usec);
 							param->value = s.data;
 							break;
 						default:
@@ -6721,31 +6707,59 @@ pushdownOrderBy(PlannerInfo *root, RelOptInfo *baserel, struct OracleFdwState *f
 	{
 		PathKey *pathkey = (PathKey *)lfirst(cell);
 		EquivalenceClass *pathkey_ec = pathkey->pk_eclass;
+		EquivalenceMember *em = NULL;
 		Expr *em_expr = NULL;
 		char *sort_clause;
 		Oid em_type;
+		ListCell *lc;
 		bool can_pushdown;
 
+		/* ec_has_volatile saves some cycles */
+		if (pathkey_ec->ec_has_volatile)
+			return false;
+
 		/*
-		 * deparseExpr would detect volatile expressions as well, but
-		 * ec_has_volatile saves some cycles.
+		 * Given an EquivalenceClass and a foreign relation, find an EC member
+		 * that can be used to sort the relation remotely according to a pathkey
+		 * using this EC.
+		 *
+		 * If there is more than one suitable candidate, use an arbitrary
+		 * one of them.
+		 *
+		 * This checks that the EC member expression uses only Vars from the given
+		 * rel and is shippable.  Caller must separately verify that the pathkey's
+		 * ordering operator is shippable.
 		 */
-		can_pushdown = !pathkey_ec->ec_has_volatile
-				&& ((em_expr = find_em_expr_for_rel(pathkey_ec, baserel)) != NULL);
-
-		if (can_pushdown)
+		foreach(lc, pathkey_ec->ec_members)
 		{
-			em_type = exprType((Node *)em_expr);
+			EquivalenceMember *some_em = (EquivalenceMember *) lfirst(lc);
 
-			/* expressions of a type different from this are not safe to push down into ORDER BY clauses */
-			if (em_type != INT8OID && em_type != INT2OID && em_type != INT4OID && em_type != OIDOID
-					&& em_type != FLOAT4OID && em_type != FLOAT8OID && em_type != NUMERICOID && em_type != DATEOID
-					&& em_type != TIMESTAMPOID && em_type != TIMESTAMPTZOID && em_type != INTERVALOID)
-				can_pushdown = false;
+			/*
+			 * Note we require !bms_is_empty, else we'd accept constant
+			 * expressions which are not suitable for the purpose.
+			 */
+			if (bms_is_subset(some_em->em_relids, baserel->relids) &&
+				!bms_is_empty(some_em->em_relids))
+			{
+				em = some_em;
+				break;
+			}
 		}
 
+		if (em == NULL)
+			return false;
+
+		em_expr = em->em_expr;
+		em_type = exprType((Node *)em_expr);
+
+		/* expressions of a type different from this are not safe to push down into ORDER BY clauses */
+		can_pushdown = (em_type == INT8OID || em_type == INT2OID || em_type == INT4OID || em_type == OIDOID
+				|| em_type == FLOAT4OID || em_type == FLOAT8OID || em_type == NUMERICOID || em_type == DATEOID
+				|| em_type == TIMESTAMPOID || em_type == TIMESTAMPTZOID || em_type == INTERVALOID);
+
 		if (can_pushdown &&
-			((sort_clause = deparseExpr(fdwState->session, baserel, em_expr, fdwState->oraTable, &(fdwState->params))) != NULL)){
+			((sort_clause = deparseExpr(fdwState->session, baserel, em_expr, fdwState->oraTable, &(fdwState->params))) != NULL))
+		{
 			/* keep usable_pathkeys for later use. */
 			usable_pathkeys = lappend(usable_pathkeys, pathkey);
 
@@ -6845,6 +6859,36 @@ deparseLimit(PlannerInfo *root, struct OracleFdwState *fdwState, RelOptInfo *bas
 
 	return limit_clause.data;
 }
+
+#if PG_VERSION_NUM < 150000
+/* interval2itm()
+ * Convert an Interval to a pg_itm structure.
+ * Note: overflow is not possible, because the pg_itm fields are
+ * wide enough for all possible conversion results.
+ */
+void
+interval2itm(Interval span, struct pg_itm *itm)
+{
+	TimeOffset  time;
+	Offset  tfrac;
+
+	itm->tm_year = span.month / MONTHS_PER_YEAR;
+	itm->tm_mon = span.month % MONTHS_PER_YEAR;
+	itm->tm_mday = span.day;
+	time = span.time;
+
+	tfrac = time / USECS_PER_HOUR;
+	time -= tfrac * USECS_PER_HOUR;
+	itm->tm_hour = tfrac;
+	tfrac = time / USECS_PER_MINUTE;
+	time -= tfrac * USECS_PER_MINUTE;
+	itm->tm_min = (int) tfrac;
+	tfrac = time / USECS_PER_SEC;
+	time -= tfrac * USECS_PER_SEC;
+	itm->tm_sec = (int) tfrac;
+	itm->tm_usec = (int) time;
+}
+#endif  /* PG_VERSION_NUM */
 
 /*
  * oracleGetShareFileName
