@@ -2501,6 +2501,7 @@ oracleImportForeignSchema(ImportForeignSchemaStmt *stmt, Oid serverOid)
 					appendStringInfo(&buf, "timestamp(%d) without time zone", (typescale > 6) ? 6 : typescale);
 					break;
 				case ORA_TYPE_TIMESTAMPTZ:
+				case ORA_TYPE_TIMESTAMPLTZ:
 					appendStringInfo(&buf, "timestamp(%d) with time zone", (typescale > 6) ? 6 : typescale);
 					break;
 				case ORA_TYPE_INTERVALD2S:
@@ -2810,17 +2811,30 @@ char
 	{
 		if (fdwState->oraTable->cols[i]->used)
 		{
+			char *format;
 			StringInfoData alias;
+
 			initStringInfo(&alias);
 			/* table alias is created from range table index */
 			ADD_REL_QUALIFIER(&alias, fdwState->oraTable->cols[i]->varno);
 
-			/* add qualified column name */
+			/* format for qualified column name */
 			if (fdwState->oraTable->cols[i]->oratype == ORA_TYPE_XMLTYPE)
 				/* convert XML to CLOB in the query */
-				appendStringInfo(&query, "%s(%s%s).getclobval()", separator, alias.data, fdwState->oraTable->cols[i]->name);
+				format = "%s(%s%s).getclobval()";
+			else if (fdwState->oraTable->cols[i]->oratype == ORA_TYPE_TIMESTAMPLTZ)
+				/* convert TIMESTAMP WITH LOCAL TIME ZONE to TIMESTAMP WITH TIME ZONE */
+				format = "%s(%s%s AT TIME ZONE sessiontimezone)";
 			else
-				appendStringInfo(&query, "%s%s%s", separator, alias.data, fdwState->oraTable->cols[i]->name);
+				/* select the column as it is */
+				format = "%s%s%s";
+
+			appendStringInfo(&query,
+							 format,
+							 separator,
+							 alias.data,
+							 fdwState->oraTable->cols[i]->name);
+
 			separator = ", ";
 		}
 	}
@@ -3787,9 +3801,7 @@ deparseExpr(oracleSession *session, RelOptInfo *foreignrel, Expr *expr, const st
 
 				/* work around the lack of booleans in Oracle */
 				if (variable->vartype == BOOLOID)
-				{
 					appendStringInfo(&result, "(");
-				}
 
 				/* qualify with an alias based on the range table index */
 				initStringInfo(&alias);
@@ -3799,9 +3811,7 @@ deparseExpr(oracleSession *session, RelOptInfo *foreignrel, Expr *expr, const st
 
 				/* work around the lack of booleans in Oracle */
 				if (variable->vartype == BOOLOID)
-				{
 					appendStringInfo(&result, " <> 0)");
-				}
 			}
 			else
 			{
@@ -4979,7 +4989,8 @@ checkDataType(oraType oratype, int scale, Oid pgtype, const char *tablename, con
 	/* DATE and timestamps can be transformed to each other */
 	if ((oratype == ORA_TYPE_DATE
 			|| oratype == ORA_TYPE_TIMESTAMP
-			|| oratype == ORA_TYPE_TIMESTAMPTZ)
+			|| oratype == ORA_TYPE_TIMESTAMPTZ
+			|| oratype == ORA_TYPE_TIMESTAMPLTZ)
 			&& (pgtype == DATEOID
 			|| pgtype == TIMESTAMPOID
 			|| pgtype == TIMESTAMPTZOID))
