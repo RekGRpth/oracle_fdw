@@ -108,9 +108,9 @@ SELECT oracle_execute(
           'oracle',
           E'INSERT INTO scott.typetest2 (id, ts1, ts2, ts3) VALUES (\n'
           '   1,\n'
-          '   ''2022-08-01 00:00:00 AD'',\n'
-          '   ''2022-08-01 00:00:00 AD'',\n'
-          '   ''2022-08-01 00:00:00 AD''\n'
+          '   FROM_TZ(CAST (''2002-08-01 00:00:00 AD'' AS timestamp), ''UTC''),\n'
+          '   FROM_TZ(CAST (''2002-08-01 00:00:00 AD'' AS timestamp), ''UTC''),\n'
+          '   FROM_TZ(CAST (''2002-08-01 00:00:00 AD'' AS timestamp), ''UTC'')\n'
           ')'
        );
 
@@ -557,7 +557,17 @@ SELECT id FROM f_typetest1() ORDER BY id;
 RESET SESSION AUTHORIZATION;
 DROP ROLE duff;
 
+/* test "current_timestamp" and "current_date" pushdown */
+
+EXPLAIN (COSTS off)
+SELECT id FROM typetest1 WHERE ts = current_timestamp;
+SELECT id FROM typetest1 WHERE ts = current_timestamp;
+EXPLAIN (COSTS off)
+SELECT id FROM typetest1 WHERE d = current_date;
+SELECT id FROM typetest1 WHERE d = current_date;
+
 /* test TIMESTAMP WITH LOCAL TIME ZONE */
+
 INSERT INTO typetest2 (id, ts1, ts2, ts3) VALUES (
    2,
    '2020-12-31 00:00:00 UTC',

@@ -771,6 +771,17 @@ oracleGetForeignRelSize(PlannerInfo *root, RelOptInfo *baserel, Oid foreigntable
 	double ntuples = -1;
 	bool order_by_local;
 	RangeTblEntry *rte = planner_rt_fetch(baserel->relid, root);
+	Oid check_user;
+
+	/*
+	 * Get the user whose user mapping should be used (if invalid, the current
+	 * user is used).
+	 */
+#if PG_VERSION_NUM < 160000
+	check_user = rte->checkAsUser;
+#else
+	check_user = getRTEPermissionInfo(root->parse->rteperminfos, rte)->checkAsUser;
+#endif  /* PG_VERSION_NUM < 160000 */
 
 	elog(DEBUG1, "oracle_fdw: plan foreign table scan");
 
@@ -779,7 +790,7 @@ oracleGetForeignRelSize(PlannerInfo *root, RelOptInfo *baserel, Oid foreigntable
 	 * To match what ExecCheckRTEPerms does, pass the user whose user mapping
 	 * should be used (if invalid, the current user is used).
 	 */
-	fdwState = getFdwState(foreigntableid, NULL, rte->checkAsUser);
+	fdwState = getFdwState(foreigntableid, NULL, check_user);
 
 	/*
 	 * Store the table OID in each table column.
@@ -1517,8 +1528,28 @@ oraclePlanForeignModify(PlannerInfo *root, ModifyTable *plan, Index resultRelati
 	bool has_trigger = false, firstcol;
 	char paramName[10];
 	TupleDesc tupdesc;
-	Bitmapset *tmpset;
+	Bitmapset *updated_cols;
 	AttrNumber col;
+	Oid check_user;
+
+	/*
+	 * Get the updated columns and the user for permission checks.
+	 * We put that here at the beginning, since the way to do that changed
+	 * considerably over the different PostgreSQL versions.
+	 */
+#if PG_VERSION_NUM >= 160000
+	RTEPermissionInfo *perminfo = getRTEPermissionInfo(root->parse->rteperminfos, rte);
+
+	check_user = perminfo->checkAsUser;
+	updated_cols = bms_copy(perminfo->updatedCols);
+#else
+	check_user = rte->checkAsUser;
+#if PG_VERSION_NUM >= 90500
+	updated_cols = bms_copy(rte->updatedCols);
+#else
+	updated_cols = bms_copy(rte->modifiedCols);
+#endif  /* PG_VERSION_NUM >= 90500 */
+#endif  /* PG_VERSION_NUM >= 160000 */
 
 #if PG_VERSION_NUM >= 90500
 	/* we don't support INSERT ... ON CONFLICT */
@@ -1532,19 +1563,15 @@ oraclePlanForeignModify(PlannerInfo *root, ModifyTable *plan, Index resultRelati
 	if (resultRelation < root->simple_rel_array_size
 			&& root->simple_rel_array[resultRelation] != NULL
 			&& root->simple_rel_array[resultRelation]->fdw_private != NULL)
-	{
 		/* if yes, copy the foreign table information from the associated RelOptInfo */
 		fdwState = copyPlanData((struct OracleFdwState *)(root->simple_rel_array[resultRelation]->fdw_private));
-	}
 	else
-	{
 		/*
 		 * If no, we have to construct the foreign table data ourselves.
 		 * To match what ExecCheckRTEPerms does, pass the user whose user mapping
 		 * should be used (if invalid, the current user is used).
 		 */
-		fdwState = getFdwState(rte->relid, NULL, rte->checkAsUser);
-	}
+		fdwState = getFdwState(rte->relid, NULL, check_user);
 
 	initStringInfo(&sql);
 
@@ -1581,13 +1608,7 @@ oraclePlanForeignModify(PlannerInfo *root, ModifyTable *plan, Index resultRelati
 
 			break;
 		case CMD_UPDATE:
-#if PG_VERSION_NUM >= 90500
-			tmpset = bms_copy(rte->updatedCols);
-#else
-			tmpset = bms_copy(rte->modifiedCols);
-#endif  /* PG_VERSION_NUM */
-
-			while ((col = bms_first_member(tmpset)) >= 0)
+			while ((col = bms_first_member(updated_cols)) >= 0)
 			{
 				col += FirstLowInvalidHeapAttributeNumber;
 				if (col <= InvalidAttrNumber)  /* shouldn't happen */
@@ -1812,12 +1833,15 @@ void oracleBeginForeignInsert(ModifyTableState *mtstate, ResultRelInfo *rinfo)
 	Relation rel = rinfo->ri_RelationDesc;
 	EState *estate = mtstate->ps.state;
 	struct OracleFdwState *fdw_state;
+#if PG_VERSION_NUM < 160000
 	Index resultRelation;
 	RangeTblEntry *rte;
+#endif  /* PG_VERSION_NUM < 160000 */
 	StringInfoData buf;
 	struct paramDesc *param;
 	HeapTuple tuple;
 	int i;
+	Oid check_user;
 
 	elog(DEBUG3, "oracle_fdw: execute foreign table COPY on %d", RelationGetRelid(rel));
 
@@ -1841,6 +1865,7 @@ void oracleBeginForeignInsert(ModifyTableState *mtstate, ResultRelInfo *rinfo)
 				(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
 				 errmsg("cannot route tuples into foreign table to be updated")));
 
+#if PG_VERSION_NUM < 160000
 	/*
 	 * If the foreign table is a partition that doesn't have a corresponding
 	 * RTE entry, we need to create a new RTE describing the foreign table,
@@ -1858,13 +1883,18 @@ void oracleBeginForeignInsert(ModifyTableState *mtstate, ResultRelInfo *rinfo)
 	rte = list_nth(estate->es_range_table, resultRelation - 1);
 #else
 	rte = exec_rt_fetch(resultRelation, estate);
-#endif  /* PG_VERSION_NUM */
+#endif  /* PG_VERSION_NUM < 120000 */
 
 	/*
-	 * To match what ExecCheckRTEPerms does, pass the user whose user mapping
-	 * should be used (if invalid, the current user is used).
+	 * Get the user whose user mapping should be used (if invalid, the current
+	 * user is used).
 	 */
-	fdw_state = getFdwState(RelationGetRelid(rel), NULL, rte->checkAsUser);
+	check_user = rte->checkAsUser;
+#else  /* PG_VERSION_NUM >= 160000 */
+	check_user = ExecGetResultRelCheckAsUser(rinfo, estate);
+#endif  /* PG_VERSION_NUM < 160000 */
+
+	fdw_state = getFdwState(RelationGetRelid(rel), NULL, check_user);
 
 	/* not using "deserializePlanData", we have to initialize these ourselves */
 	for (i=0; i<fdw_state->oraTable->ncols; ++i)
@@ -1961,7 +1991,7 @@ oracleEndForeignInsert(EState *estate, ResultRelInfo *rinfo)
 	pfree(fdw_state->session);
 	fdw_state->session = NULL;
 }
-#endif  /*PG_VERSION_NUM */
+#endif  /* PG_VERSION_NUM >= 110000 */
 
 /*
  * oracleExecForeignInsert
@@ -3652,9 +3682,9 @@ deparseExpr(oracleSession *session, RelOptInfo *foreignrel, Expr *expr, const st
 	Expr *rightexpr;
 	ArrayExpr *array;
 	ArrayCoerceExpr *arraycoerce;
-#if PG_VERSION_NUM >= 100000
+#if (PG_VERSION_NUM >= 100000) && (PG_VERSION_NUM < 160000)
 	SQLValueFunction *sqlvalfunc;
-#endif
+#endif  /* PG_VERSION_NUM */
 	regproc typoutput;
 	HeapTuple tuple;
 	ListCell *cell;
@@ -4480,11 +4510,25 @@ deparseExpr(oracleSession *session, RelOptInfo *foreignrel, Expr *expr, const st
 				pfree(left);
 				pfree(right);
 			}
-			else if (strcmp(opername, "now") == 0 || strcmp(opername, "transaction_timestamp") == 0)
+			else if (strcmp(opername, "now") == 0
+				|| strcmp(opername, "current_timestamp") == 0
+				|| strcmp(opername, "transaction_timestamp") == 0)
 			{
 				/* special case: current timestamp */
 				initStringInfo(&result);
 				appendStringInfo(&result, "(CAST (:now AS TIMESTAMP WITH TIME ZONE))");
+			}
+			else if (strcmp(opername, "current_date") == 0)
+			{
+				/* special case: current_date */
+				initStringInfo(&result);
+				appendStringInfo(&result, "TRUNC(CAST (CAST(:now AS TIMESTAMP WITH TIME ZONE) AS DATE))");
+			}
+			else if (strcmp(opername, "localtimestamp") == 0)
+			{
+				/* special case: localtimestamp */
+				initStringInfo(&result);
+				appendStringInfo(&result, "(CAST (CAST (:now AS TIMESTAMP WITH TIME ZONE) AS TIMESTAMP))");
 			}
 			else
 			{
@@ -4498,6 +4542,11 @@ deparseExpr(oracleSession *session, RelOptInfo *foreignrel, Expr *expr, const st
 		case T_CoerceViaIO:
 			/*
 			 * We will only handle casts of 'now'.
+			 *
+			 * This is how "current_timestamp", "current_date" and
+			 * "localtimestamp" were represented before PostgreSQL v10.
+			 * I am not sure whether this code path can be reached in later
+			 * versions, but it doesn't hurt to leave the code for now.
 			 */
 			coerce = (CoerceViaIO *)expr;
 
@@ -4543,7 +4592,7 @@ deparseExpr(oracleSession *session, RelOptInfo *foreignrel, Expr *expr, const st
 			}
 
 			break;
-#if PG_VERSION_NUM >= 100000
+#if (PG_VERSION_NUM >= 100000) && (PG_VERSION_NUM < 160000)
 		case T_SQLValueFunction:
 			sqlvalfunc = (SQLValueFunction *)expr;
 
@@ -4566,7 +4615,7 @@ deparseExpr(oracleSession *session, RelOptInfo *foreignrel, Expr *expr, const st
 			}
 
 			break;
-#endif
+#endif  /* (PG_VERSION_NUM >= 100000) && (PG_VERSION_NUM < 160000) */
 		default:
 			/* we cannot translate this to Oracle */
 			return NULL;
@@ -4919,10 +4968,10 @@ getUsedColumns(Expr *expr, struct oraTable *oraTable, int foreignrelid)
 		case T_PlaceHolderVar:
 			getUsedColumns(((PlaceHolderVar *)expr)->phexpr, oraTable, foreignrelid);
 			break;
-#if PG_VERSION_NUM >= 100000
+#if (PG_VERSION_NUM >= 100000) && (PG_VERSION_NUM < 160000)
 		case T_SQLValueFunction:
 			break;  /* contains no column references */
-#endif
+#endif  /* PG_VERSION_NUM */
 		default:
 			/*
 			 * We must be able to handle all node types that can
