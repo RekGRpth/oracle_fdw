@@ -11,6 +11,14 @@ Version 2.6.0
     If a BEFORE UPDATE trigger modified a column that was not updated, the
     changed column was not propagated to Oracle.
     Report and diagnosis by "jopoly".
+  - Don't free() strings in the environment.
+    This could lead to crashes and unpredictable behavior.
+  - Set the Oracle session time zone from the PostgreSQL session time zone.
+    That makes TIMESTAMP WITH LOCAL TIME ZONE translate correctly.
+  - Make auto_explain work with oracle_fdw.  This used to cause an error:
+    oracleQueryPlan internal error: statement handle is not NULL
+    Report by "Jaisus" and Sebastien Caunes.  Sebastien provided the essential
+    clue that the problem is related to auto_explain.
 
   Enhancements:
   - Skip Oracle savepoint management if the foreign server option
@@ -18,6 +26,13 @@ Version 2.6.0
     PostgreSQL transaction.  This saves some round trips and avoids Oracle
     errors that might be thrown when entering a PL/pgSQL exception handler.
     Per suggestion from "math-g".
+  - Use explicit bulk fetching into arrays rather than OCI prefetching for
+    Oracle SELECT statements.  This greatly improves performance for LOB
+    and LONG columns, since OCI prefetching didn't work if these data types.
+    The limitation still applies for SDO_GEOMETRY columns.  A new option
+    "lob_prefetch" is used to configure how much of the LOBs is fetched
+    with the rows to reduce the number of round trips.  This enhancement
+    was generously sponsored by Mipih (https://www.mipih.fr/).
 
 Version 2.5.0, released 2022-10-28
 

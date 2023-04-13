@@ -17,6 +17,7 @@
 /* oracle_fdw version */
 #define ORACLE_FDW_VERSION "2.6.0devel"
 
+/* definitions that need OCI */
 #ifdef OCI_ORACLE
 /*
  * Types for a linked list for various handles.
@@ -45,6 +46,7 @@ struct srvEntry
 struct envEntry
 {
 	char *nls_lang;
+	char *timezone;
 	OCIEnv *envhp;
 	OCIError *errhp;
 	struct envEntry *next;
@@ -64,6 +66,9 @@ struct oracleSession
 	OCIStmt *stmthp;
 	int have_nchar;
 	int server_version[5];
+	unsigned int last_batch;   /* got OCI_NO_DATA */
+	unsigned int fetched_rows;
+	unsigned int current_row;  /* first row is 1 */
 };
 #endif
 typedef struct oracleSession oracleSession;
@@ -119,11 +124,11 @@ struct oraColumn
 	int used;                /* is the column used in the query? */
 	int strip_zeros;         /* should ASCII zero be removed from Oracle strings? */
 	int pkey;                /* nonzero for primary keys, later set to the resjunk attribute number */
-	char *val;               /* buffer for Oracle to return results in (LOB locator for LOBs) */
-	long val_size;           /* allocated size in val */
-	unsigned short val_len;  /* actual length of val */
+	char *val;               /* buffer for Oracle to return results in (LOB locators for LOBs) */
+	long val_size;           /* allocated size of one element in val */
+	unsigned short *val_len; /* array of actual lengths of val */
 	unsigned int val_len4;   /* actual length of val - for bind callbacks */
-	short val_null;          /* indicator for NULL value */
+	short *val_null;         /* indicators for NULL values */
 	int varno;               /* range table index of this column's relation */
 };
 
@@ -199,7 +204,7 @@ typedef enum
 /*
  * functions defined in oracle_utils.c
  */
-extern oracleSession *oracleGetSession(const char *connectstring, oraIsoLevel isolation_level, char *user, char *password, const char *nls_lang, int have_nchar, const char *tablename, int curlevel);
+extern oracleSession *oracleGetSession(const char *connectstring, oraIsoLevel isolation_level, char *user, char *password, const char *nls_lang, const char *timezone, int have_nchar, const char *tablename, int curlevel);
 extern void oracleCloseStatement(oracleSession *session);
 extern void oracleCloseConnections(void);
 extern void oracleShutdown(void);
@@ -207,11 +212,11 @@ extern void oracleCancel(void);
 extern void oracleEndTransaction(void *arg, int is_commit, int silent);
 extern void oracleEndSubtransaction(void *arg, int nest_level, int is_commit);
 extern int oracleIsStatementOpen(oracleSession *session);
-extern struct oraTable *oracleDescribe(oracleSession *session, char *dblink, char *schema, char *table, char *pgname, long max_long);
+extern struct oraTable *oracleDescribe(oracleSession *session, char *dblink, char *schema, char *table, char *pgname, long max_long, int *has_geometry);
 extern void oracleExplain(oracleSession *session, const char *query, int *nrows, char ***plan);
-extern void oraclePrepareQuery(oracleSession *session, const char *query, const struct oraTable *oraTable, unsigned int prefetch);
-extern int oracleExecuteQuery(oracleSession *session, const struct oraTable *oraTable, struct paramDesc *paramList);
-extern int oracleFetchNext(oracleSession *session);
+extern void oraclePrepareQuery(oracleSession *session, const char *query, const struct oraTable *oraTable, unsigned int prefetch, unsigned int lob_prefetch);
+extern unsigned int oracleExecuteQuery(oracleSession *session, const struct oraTable *oraTable, struct paramDesc *paramList, unsigned int prefetch);
+extern unsigned int oracleFetchNext(oracleSession *session, unsigned int prefetch);
 extern void oracleExecuteCall(oracleSession *session, char * const stmt);
 extern void oracleGetLob(oracleSession *session, void *locptr, oraType type, char **value, long *value_len, unsigned long trunc);
 extern void oracleClientVersion(int *major, int *minor, int *update, int *patch, int *port_patch);
