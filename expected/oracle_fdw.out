@@ -375,6 +375,25 @@ SELECT id FROM typetest1 WHERE vc = ANY ('{zzzzz}'::name[]);
 ----
 (0 rows)
 
+-- test whole-row references with RETURNING (bug #568)
+INSERT INTO shorty (id, c) VALUES (5, 'return me') RETURNING shorty;
+      shorty      
+------------------
+ (5,"return me ")
+(1 row)
+
+UPDATE shorty SET c = 'changed' WHERE id = 5 RETURNING shorty;
+      shorty      
+------------------
+ (5,"changed   ")
+(1 row)
+
+DELETE FROM shorty WHERE id = 5 RETURNING shorty;
+      shorty      
+------------------
+ (5,"changed   ")
+(1 row)
+
 /*
  * Test "strip_zeros" column option.
  */

@@ -298,6 +298,10 @@ DELETE FROM typetest1 WHERE FALSE;
 UPDATE shorty SET c = NULL WHERE FALSE RETURNING *;
 -- test deparsing of ScalarArrayOpExpr where the RHS has different element type than the LHS
 SELECT id FROM typetest1 WHERE vc = ANY ('{zzzzz}'::name[]);
+-- test whole-row references with RETURNING (bug #568)
+INSERT INTO shorty (id, c) VALUES (5, 'return me') RETURNING shorty;
+UPDATE shorty SET c = 'changed' WHERE id = 5 RETURNING shorty;
+DELETE FROM shorty WHERE id = 5 RETURNING shorty;
 
 /*
  * Test "strip_zeros" column option.
