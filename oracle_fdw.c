@@ -408,7 +408,7 @@ static void transactionCallback(XactEvent event, void *arg);
 static void exitHook(int code, Datum arg);
 static void oracleDie(SIGNAL_ARGS);
 static char *setSelectParameters(struct paramDesc *paramList, ExprContext *econtext);
-static void convertTuple(struct OracleFdwState *fdw_state, unsigned int index, Datum *values, bool *nulls, bool trunc_lob);
+static void convertTuple(struct OracleFdwState *fdw_state, unsigned int index, Datum *values, bool *nulls);
 static void errorContextCallback(void *arg);
 static bool hasTrigger(Relation rel, CmdType cmdtype);
 static void buildInsertQuery(StringInfo sql, struct OracleFdwState *fdwState);
@@ -1396,7 +1396,7 @@ oracleIterateForeignScan(ForeignScanState *node)
 		++fdw_state->rowcount;
 
 		/* convert result to arrays of values and null indicators */
-		convertTuple(fdw_state, index, slot->tts_values, slot->tts_isnull, false);
+		convertTuple(fdw_state, index, slot->tts_values, slot->tts_isnull);
 
 		/* store the virtual tuple */
 		ExecStoreVirtualTuple(slot);
@@ -2097,7 +2097,7 @@ oracleExecForeignInsert(EState *estate, ResultRelInfo *rinfo, TupleTableSlot *sl
 		++fdw_state->rowcount;
 
 		/* convert result for RETURNING to arrays of values and null indicators */
-		convertTuple(fdw_state, 1, slot->tts_values, slot->tts_isnull, false);
+		convertTuple(fdw_state, 1, slot->tts_values, slot->tts_isnull);
 
 		/* store the virtual tuple */
 		ExecStoreVirtualTuple(slot);
@@ -2147,7 +2147,7 @@ oracleExecForeignUpdate(EState *estate, ResultRelInfo *rinfo, TupleTableSlot *sl
 		++fdw_state->rowcount;
 
 		/* convert result for RETURNING to arrays of values and null indicators */
-		convertTuple(fdw_state, 1, slot->tts_values, slot->tts_isnull, false);
+		convertTuple(fdw_state, 1, slot->tts_values, slot->tts_isnull);
 
 		/* store the virtual tuple */
 		ExecStoreVirtualTuple(slot);
@@ -2197,7 +2197,7 @@ oracleExecForeignDelete(EState *estate, ResultRelInfo *rinfo, TupleTableSlot *sl
 		++fdw_state->rowcount;
 
 		/* convert result for RETURNING to arrays of values and null indicators */
-		convertTuple(fdw_state, 1, slot->tts_values, slot->tts_isnull, false);
+		convertTuple(fdw_state, 1, slot->tts_values, slot->tts_isnull);
 
 		/* store the virtual tuple */
 		ExecStoreVirtualTuple(slot);
@@ -3733,7 +3733,7 @@ acquireSampleRowsFunc(Relation relation, int elevel, HeapTuple *rows, int targro
 
 			/* use a temporary memory context during convertTuple */
 			old_cxt = MemoryContextSwitchTo(tmp_cxt);
-			convertTuple(fdw_state, index, values, nulls, true);
+			convertTuple(fdw_state, index, values, nulls);
 			MemoryContextSwitchTo(old_cxt);
 
 			rows[collected_rows++] = heap_form_tuple(tupDesc, values, nulls);
@@ -3756,7 +3756,7 @@ acquireSampleRowsFunc(Relation relation, int elevel, HeapTuple *rows, int targro
 
 				/* use a temporary memory context during convertTuple */
 				old_cxt = MemoryContextSwitchTo(tmp_cxt);
-				convertTuple(fdw_state, index, values, nulls, true);
+				convertTuple(fdw_state, index, values, nulls);
 				MemoryContextSwitchTo(old_cxt);
 
 				rows[k] = heap_form_tuple(tupDesc, values, nulls);
@@ -6642,10 +6642,9 @@ setSelectParameters(struct paramDesc *paramList, ExprContext *econtext)
  * 		Convert a result row from Oracle stored in oraTable
  * 		into arrays of values and null indicators.
  * 		"index" is the (1 based) index into the array of results.
- * 		If trunc_lob it true, truncate LOBs to WIDTH_THRESHOLD+1 bytes.
  */
 void
-convertTuple(struct OracleFdwState *fdw_state, unsigned int index, Datum *values, bool *nulls, bool trunc_lob)
+convertTuple(struct OracleFdwState *fdw_state, unsigned int index, Datum *values, bool *nulls)
 {
 	char *value = NULL, *oraval;
 	long value_len = 0;
@@ -6704,10 +6703,10 @@ convertTuple(struct OracleFdwState *fdw_state, unsigned int index, Datum *values
 				|| fdw_state->oraTable->cols[i]->oratype == ORA_TYPE_CLOB
 				|| fdw_state->oraTable->cols[i]->oratype == ORA_TYPE_NCLOB)
 		{
-			/* for LOBs, get the actual LOB contents (palloc'ed), truncated if desired */
+			/* for LOBs, get the actual LOB contents (palloc'ed) */
 			oracleGetLob(fdw_state->session,
 				(void *)oraval, fdw_state->oraTable->cols[i]->oratype,
-				&value, &value_len, trunc_lob ? (WIDTH_THRESHOLD+1) : 0);
+				&value, &value_len);
 		}
 		else if (fdw_state->oraTable->cols[i]->oratype == ORA_TYPE_GEOMETRY)
 		{

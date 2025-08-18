@@ -220,7 +220,7 @@ extern void oraclePrepareQuery(oracleSession *session, const char *query, const 
 extern unsigned int oracleExecuteQuery(oracleSession *session, const struct oraTable *oraTable, struct paramDesc *paramList, unsigned int prefetch);
 extern unsigned int oracleFetchNext(oracleSession *session, unsigned int prefetch);
 extern void oracleExecuteCall(oracleSession *session, char * const stmt);
-extern void oracleGetLob(oracleSession *session, void *locptr, oraType type, char **value, long *value_len, unsigned long trunc);
+extern void oracleGetLob(oracleSession *session, void *locptr, oraType type, char **value, long *value_len);
 extern void oracleClientVersion(int *major, int *minor, int *update, int *patch, int *port_patch);
 extern void oracleServerVersion(oracleSession *session, int *major, int *minor, int *update, int *patch, int *port_patch);
 extern void *oracleGetGeometryType(oracleSession *session);
