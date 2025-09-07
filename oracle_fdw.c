@@ -6228,7 +6228,7 @@ setModifyParameters(struct paramDesc *paramList, TupleTableSlot *newslot, TupleT
 				/* detoast it if necessary */
 				datum = (Datum)PG_DETOAST_DATUM(datum);
 
-				value_len = VARSIZE(datum) - VARHDRSZ;
+				value_len = VARSIZE(DatumGetPointer(datum)) - VARHDRSZ;
 
 				/*
 				 * If the value is an empty string, treat it as NULL.
@@ -6249,7 +6249,7 @@ setModifyParameters(struct paramDesc *paramList, TupleTableSlot *newslot, TupleT
 				/* the first 4 bytes contain the length */
 				param->value = palloc(value_len + 4);
 				memcpy(param->value, (const char *)&value_len, 4);
-				memcpy(param->value + 4, VARDATA(datum), value_len);
+				memcpy(param->value + 4, VARDATA(DatumGetPointer(datum)), value_len);
 				break;
 			case BIND_GEOMETRY:
 				if (isnull)
@@ -6262,7 +6262,9 @@ setModifyParameters(struct paramDesc *paramList, TupleTableSlot *newslot, TupleT
 					datum = (Datum)PG_DETOAST_DATUM(datum);
 
 					/* will allocate objects in the Oracle object cache */
-					param->value = (char *)oracleEWKBToGeom(session, VARSIZE(datum) - VARHDRSZ, VARDATA(datum));
+					param->value = (char *)oracleEWKBToGeom(session,
+															VARSIZE(DatumGetPointer(datum)) - VARHDRSZ,
+															VARDATA(DatumGetPointer(datum)));
 				}
 				value_len = 0;  /* not used */
 				break;
