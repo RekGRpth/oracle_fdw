@@ -24,6 +24,7 @@
   <PropertyGroup Label="Globals">
     <ProjectGuid>{E4E300FC-E7CE-4BAA-9028-AA348F977376}</ProjectGuid>
     <RootNamespace>oracle_fdw</RootNamespace>
+	<VcpkgEnabled>false</VcpkgEnabled>
   </PropertyGroup>
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.Default.props" />
   <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Debug|Win32'" Label="Configuration">
