@@ -160,7 +160,11 @@
 #define table_close(x, y) heap_close(x, y)
 #endif  /* PG_VERSION_NUM */
 
+#if PG_VERSION_NUM >= 180000
+PG_MODULE_MAGIC_EXT(.name = "oracle_fdw", .version = ORACLE_FDW_VERSION);
+#else
 PG_MODULE_MAGIC;
+#endif
 
 /*
  * "true" if Oracle data have been modified in the current transaction.
