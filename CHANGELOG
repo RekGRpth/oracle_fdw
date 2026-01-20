@@ -1,10 +1,14 @@
-Version 2.8.1
+Version 2.9.0
 
   Bugfixes:
   - Fix a bug introduced in 2.8.0 that causes ANALYZE to fail with
       ORA-03127: no new operations allowed until the active operation ends
     if the table contains larger LOBs.
     Report by "MMFERNANDEZC".
+
+  Enhancements:
+  - Support pg_get_loaded_modules() by setting PG_MODULE_MAGIC_EXT.
+    Patch by Arthur Nascimento.
 
 Version 2.8.0, released 2025-05-10
 
