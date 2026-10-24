@@ -1,0 +1,125 @@
+# Build and run the full PGXS regression suite.
+# Tests use TWO_TASK from the postmaster environment and run in Makefile order.
+
+name: CI
+
+on:
+  # Test development branches as well as pull requests.
+  push:
+  pull_request:
+
+concurrency:
+  # A new push supersedes the previous run for the same branch or PR.
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  regression:
+    name: 'regression (PG ${{ matrix.pg }}, ${{ matrix.oracle-image }})'
+    # Ubuntu 22.04 provides libaio1 with the library name these clients require.
+    runs-on: ubuntu-22.04
+    timeout-minutes: 45
+    strategy:
+      # Keep diagnostics from both configurations when one fails.
+      fail-fast: false
+      matrix:
+        # Client 19 avoids the LOB failures seen with client 21.
+        # Each entry pairs a server image, its PDB service, and an OCI client.
+        # When adding versions, check regression output against expected/ too:
+        # PostgreSQL plans and Oracle error messages can vary by version.
+        include:
+          - pg: '18'
+            oracle-image: gvenzl/oracle-xe:21.3.0-faststart
+            oracle-service: XEPDB1
+            oracle-client: '19.32.0.0.0'
+          - pg: '18'
+            oracle-image: gvenzl/oracle-free:23.26.3-faststart
+            oracle-service: FREEPDB1
+            oracle-client: '23.26.3.0.0'
+    services:
+      oracle:
+        # These images provide SQL*Plus for setup and healthcheck.sh for readiness.
+        image: ${{ matrix.oracle-image }}
+        env:
+          ORACLE_PASSWORD: oracle
+        ports:
+          # Job steps run on the host and reach the PDB through localhost:1521.
+          - 1521:1521
+        # Wait for the PDB to open before running initialization SQL.
+        options: >-
+          --health-cmd healthcheck.sh
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 90
+    env:
+      PG_VERSION: ${{ matrix.pg }}
+      ORACLE_SERVICE: ${{ matrix.oracle-service }}
+      ORACLE_CLIENT: ${{ matrix.oracle-client }}
+      # Use the runner-owned cluster's socket; libpq defaults to the runner user.
+      PGPORT: '5432'
+      PGHOST: /tmp
+    steps:
+      - name: Check out the repository
+        uses: actions/checkout@v5
+
+      - name: Install PostgreSQL and PostGIS from PGDG
+        # Server headers/PGXS build the extension; PostGIS serves oracle_gis.
+        run: bash .github/ci/install-postgres.sh
+
+      - name: Install Oracle Instant Client
+        # Basic Light supplies OCI runtime libraries; SDK supplies build headers.
+        run: bash .github/ci/install-oracle-client.sh
+
+      - name: Build and install oracle_fdw
+        run: |
+          set -euxo pipefail
+          # Pin PGXS to the selected major even if other versions are installed.
+          PGCBIN="/usr/lib/postgresql/$PG_VERSION/bin/pg_config"
+          make -j"$(nproc)" ORACLE_HOME="$ORACLE_HOME" PG_CONFIG="$PGCBIN"
+          sudo make install ORACLE_HOME="$ORACLE_HOME" PG_CONFIG="$PGCBIN"
+
+      - name: Initialize the Oracle test environment
+        env:
+          # Use the actual container ID assigned by Actions for docker exec.
+          ORACLE_CONTAINER_ID: ${{ job.services.oracle.id }}
+        run: bash .github/ci/setup-oracle.sh
+
+      - name: Initialize and start PostgreSQL
+        run: bash .github/ci/start-postgres.sh
+
+      - name: Run the regression tests
+        run: |
+          set -euxo pipefail
+          # Later suites use the server and Oracle objects created by oracle_fdw.
+          # Keep REGRESS in Makefile as the suite list and execution order.
+          make installcheck PG_CONFIG="/usr/lib/postgresql/$PG_VERSION/bin/pg_config"
+
+      - name: Collect failure diagnostics
+        # Also collect partial logs on cancellation or an early setup failure.
+        if: failure() || cancelled()
+        env:
+          ORACLE_CONTAINER_ID: ${{ job.services.oracle.id }}
+        run: |
+          set -u
+          # Missing files/containers are expected when setup stops early.
+          cp "$HOME/pgdata.log" ./pgdata.log 2>/dev/null || true
+          docker logs --tail 300 "$ORACLE_CONTAINER_ID" > ./oracle-container.log 2>&1 || true
+          cat regression.out 2>/dev/null || true
+          cat regression.diffs 2>/dev/null || true
+          exit 0
+
+      - name: Upload regression artifacts
+        if: failure() || cancelled()
+        uses: actions/upload-artifact@v4
+        with:
+          # The matrix job index distinguishes configurations within the run.
+          name: regression-pg${{ env.PG_VERSION }}-run${{ github.run_id }}-job${{ strategy.job-index }}
+          # Replace diagnostics from earlier attempts of the same job.
+          overwrite: true
+          if-no-files-found: ignore
+          path: |
+            regression.out
+            regression.diffs
+            results/
+            pgdata.log
+            oracle-container.log
