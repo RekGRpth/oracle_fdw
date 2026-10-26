@@ -110,7 +110,7 @@ jobs:
 
       - name: Upload regression artifacts
         if: failure() || cancelled()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           # The matrix job index distinguishes configurations within the run.
           name: regression-pg${{ env.PG_VERSION }}-run${{ github.run_id }}-job${{ strategy.job-index }}
