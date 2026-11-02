@@ -60,7 +60,7 @@ jobs:
       PGHOST: /tmp
     steps:
       - name: Check out the repository
-        uses: actions/checkout@v5
+        uses: actions/checkout@v7
 
       - name: Install PostgreSQL and PostGIS from PGDG
         # Server headers/PGXS build the extension; PostGIS serves oracle_gis.
