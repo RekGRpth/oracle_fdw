@@ -210,11 +210,6 @@ CREATE FOREIGN TABLE typetest2 (
  * INSERT some rows into "typetest1".
  */
 
--- will fail with a read-only transaction
-ALTER SERVER oracle OPTIONS (SET isolation_level 'read_only');
-SELECT oracle_close_connections();
-DELETE FROM typetest1;
-
 -- use the default SERIALIZABLE isolation level from now on
 ALTER SERVER oracle OPTIONS (DROP isolation_level);
 SELECT oracle_close_connections();
@@ -316,9 +311,6 @@ SELECT * FROM upd ORDER BY id;
 BEGIN;
 DELETE FROM shorty WHERE id = 2;
 SAVEPOINT one;
--- will cause an error
-INSERT INTO shorty (id, c) VALUES (1, 'c');
-ROLLBACK TO one;
 INSERT INTO shorty (id, c) VALUES (2, 'c');
 ROLLBACK TO one;
 COMMIT;
@@ -334,8 +326,6 @@ ROLLBACK;
 -- test if "IN" or "= ANY" expressions are pushed down correctly
 SELECT vc FROM typetest1 WHERE id IN (1, 3, 4) ORDER BY id;
 EXPLAIN (COSTS off) SELECT vc FROM typetest1 WHERE id IN (1, 3, 4) ORDER BY id;
-SELECT id FROM typetest1 WHERE vc = ANY (ARRAY['short', (SELECT 'varlena'::varchar)]) ORDER BY id;
-EXPLAIN (COSTS off) SELECT id FROM typetest1 WHERE vc = ANY (ARRAY['short', (SELECT 'varlena'::varchar)]) ORDER BY id;
 -- test NULLIF pushdown
 SELECT id FROM typetest1 WHERE nullif(id, 1) IS NULL ORDER BY id;
 EXPLAIN (COSTS off) SELECT id FROM typetest1 WHERE nullif(id, 1) IS NULL ORDER BY id;

@@ -844,6 +844,11 @@ The regression tests are run as follows:
 
     $ make installcheck
 
+Tests with version-dependent plans or Oracle error details are collected in
+`sql/oracle_variants.sql`.  Its header documents the configurations covered by
+`expected/oracle_variants.out` and its numbered alternatives, which pg_regress
+selects automatically.  The other suites share one expected file each.
+
 The regression tests are kept up to date with the latest development version of
 PostgreSQL.  If you run them with older PostgreSQL versions, you can expect
 minor differences, like changed error messages or a different format of the

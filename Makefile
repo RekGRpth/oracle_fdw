@@ -3,7 +3,7 @@ OBJS = oracle_fdw.o oracle_utils.o oracle_gis.o
 EXTENSION = oracle_fdw
 DATA = oracle_fdw--1.2.sql oracle_fdw--1.0--1.1.sql oracle_fdw--1.1--1.2.sql
 DOCS = README.oracle_fdw
-REGRESS = oracle_fdw oracle_gis oracle_import oracle_join
+REGRESS = oracle_fdw oracle_gis oracle_import oracle_join oracle_variants
 
 # try to find Instant Client installations installed in standard paths
 FIND_INCLUDE := $(wildcard /usr/include/oracle/*/client64 /usr/include/oracle/*/client)

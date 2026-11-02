@@ -106,14 +106,6 @@ RIGHT JOIN (SELECT c AS c1 FROM typetest1)  AS subq1 ON TRUE
 LEFT JOIN  (SELECT ref1.nc AS c2, 10 AS c3 FROM typetest1  AS ref1
             INNER JOIN typetest1  AS ref2 ON ref1.fl = ref2.fl) AS subq2
 ON subq1.c1 = subq2.c2 ORDER BY subq2.c3;
--- inner rel is false, not pushed down
-EXPLAIN (COSTS off)
-SELECT 1 FROM (SELECT 1 FROM typetest1  WHERE false) AS subq1 RIGHT JOIN typetest1  AS ref1 ON NULL ORDER BY ref1.id;
-SELECT 1 FROM (SELECT 1 FROM typetest1  WHERE false) AS subq1 RIGHT JOIN typetest1  AS ref1 ON NULL ORDER BY ref1.id;
--- semi-join, not pushed down
-EXPLAIN (COSTS off)
-SELECT t1.id FROM typetest1  t1 WHERE EXISTS (SELECT 1 FROM typetest1  t2 WHERE t1.d = t2.d) ORDER BY t1.id;
-SELECT t1.id FROM typetest1  t1 WHERE EXISTS (SELECT 1 FROM typetest1  t2 WHERE t1.d = t2.d) ORDER BY t1.id;
 -- anti-join, not pushed down
 EXPLAIN (COSTS off)
 SELECT t1.id FROM typetest1  t1 WHERE NOT EXISTS (SELECT 1 FROM typetest1  t2 WHERE t1.d = t2.d) ORDER BY t1.id;

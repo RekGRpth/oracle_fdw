@@ -25,8 +25,8 @@ jobs:
       matrix:
         # Client 19 avoids the LOB failures seen with client 21.
         # Each entry pairs a server image, its PDB service, and an OCI client.
-        # When adding versions, check regression output against expected/ too:
-        # PostgreSQL plans and Oracle error messages can vary by version.
+        # Version-dependent tests and expected-file mappings are documented in
+        # sql/oracle_variants.sql. Check them when adding configurations.
         include:
           - pg: '18'
             oracle-image: gvenzl/oracle-xe:21.3.0-faststart
