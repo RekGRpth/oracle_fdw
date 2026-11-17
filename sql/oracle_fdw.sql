@@ -12,6 +12,9 @@ CREATE SERVER oracle FOREIGN DATA WRAPPER oracle_fdw OPTIONS (dbserver '', isola
 
 CREATE USER MAPPING FOR CURRENT_ROLE SERVER oracle OPTIONS (user 'SCOTT', password 'tiger');
 
+-- suppress warnings issued if the objects don't yet exist
+SET client_min_messages = error;
+
 -- drop the Oracle objects if they exist
 DO
 $$BEGIN
@@ -52,6 +55,8 @@ EXCEPTION
    WHEN OTHERS THEN
       NULL;
 END;$$;
+
+RESET client_min_messages;
 
 SELECT oracle_execute(
           'oracle',
@@ -659,3 +664,51 @@ UNION ALL
 SELECT * FROM b;
 
 ROLLBACK;
+
+/*
+ * Test subtransactions with oracle_execute.
+ */
+
+-- the first Oracle call in a transaction can happen inside a subtransaction;
+-- remote DML must be rolled back when that subtransaction aborts
+BEGIN;
+DO
+$$BEGIN
+   PERFORM oracle_execute('oracle', 'INSERT INTO scott.typetest1 (id) VALUES (999)');
+   RAISE EXCEPTION 'abort';
+EXCEPTION
+   WHEN OTHERS THEN
+      NULL;
+END;$$;
+SELECT count(*) FROM shorty WHERE id = 999;
+ROLLBACK;
+
+-- a DDL statement implicitly ends the remote transaction; if a subtransaction
+-- is aborted afterwards, a warning is issued because the rollback is impossible
+DO
+$$BEGIN
+   -- even a failed DDL statement ends (rolls back) the transaction!
+   PERFORM oracle_execute('oracle', 'DROP TABLE scott.subx_ddl PURGE');
+EXCEPTION
+   WHEN OTHERS THEN
+      NULL;
+END;$$;
+
+DO
+$$BEGIN
+   -- causes an implicit commit
+   PERFORM oracle_execute('oracle', 'CREATE TABLE scott.subx_ddl (v number)');
+   RAISE EXCEPTION 'abort';
+EXCEPTION
+   WHEN OTHERS THEN
+      NULL;
+END;$$;
+
+DO
+$$BEGIN
+   -- no warning, because we don't reach the exception handler
+   PERFORM oracle_execute('oracle', 'DROP TABLE scott.subx_ddl PURGE');
+EXCEPTION
+   WHEN OTHERS THEN
+      NULL;
+END;$$;
